@@ -5,15 +5,25 @@ container. No application sources live here — the workflow checks out upstream
 at a commit and builds its `Dockerfile`.
 
 ```
-ghcr.io/davehornigan/webhook.site:<YYYYMMDD>
+ghcr.io/davehornigan/webhook.site:<YYYYMMDDHHMM>
 ghcr.io/davehornigan/webhook.site:latest
 ```
 
-The tag is the date of the newest commit on upstream `master`, which is also
-what decides whether to build: a date the registry has not seen means there is
-something new. Two commits on the same day land under one tag, so the second
-does not retrigger a build — upstream averages one or two commits a month, and
-`force` covers the case when it matters.
+The tag is the committer timestamp of the upstream commit, in UTC to the
+minute. It is purely numeric, so it sorts correctly for both humans and a Flux
+image policy without any tag filtering. The commit itself is not in the tag —
+it is on the image:
+
+| label | holds |
+|-------|-------|
+| `org.opencontainers.image.revision` | upstream commit sha |
+| `pro.hornigan.upstream.committed`   | when that commit landed |
+| `pro.hornigan.upstream.release`     | newest upstream release at build time |
+
+```
+docker buildx imagetools inspect ghcr.io/davehornigan/webhook.site:latest \
+  --format '{{json .Image.Config.Labels}}'
+```
 
 ## Why commits and not releases
 
@@ -34,12 +44,28 @@ To pin a release instead, set `UPSTREAM_REF` in the workflow to that tag.
 
 ## How it decides to build
 
-The daily run reads the committer date of the newest commit on `master` and
-asks the registry whether an image with that date already exists. If it does, the run ends. There is no state file
+The daily run reads those same labels back off the published `:latest` and
+compares them with upstream:
+
+| published vs upstream | action |
+|-----------------------|--------|
+| same sha | nothing to do |
+| different sha, upstream newer | build |
+| different sha, upstream same age or older | refuse — upstream rewound |
+| tag already exists | skip unless forced |
+
+Comparing the sha rather than the tag means the check survives a change of tag
+scheme and catches an amended commit that kept its timestamp. The third row
+exists because a force-push on upstream `master` would otherwise be rebuilt as
+though it were new. If it does, the run ends. There is no state file
 to drift: a failed or interrupted build simply leaves the tag absent, and the
 next run retries it.
 
-`workflow_dispatch` takes a `force` input to rebuild an existing tag.
+`workflow_dispatch` takes a `force` input to rebuild regardless.
+
+GitHub disables cron in a public repository after 60 days without repository
+activity, and scheduled runs do not count. This repo is committed to rarely, so
+expect that mail eventually and re-enable the schedule from the Actions tab.
 
 ## Upstream caveats
 
