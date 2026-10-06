@@ -1,0 +1,118 @@
+# Runs the same shape as the cluster does: Postgres rather than the sqlite the
+# image bakes in, a separate queue worker, and the echo server under the one
+# hostname the image's nginx.conf will accept.
+#
+# Upstream ships its own compose file, but it does not work against the current
+# images: it overrides the echo server's command with one its entrypoint no
+# longer understands, passes Redis settings under names the echo server does not
+# read, and puts the database in sqlite.
+name: webhook-site
+
+services:
+  webhook:
+    # Upstream builds on node:11 and bkuhl/fpm-nginx:7.4, neither of which
+    # publishes arm64, so the platform has to be said out loud on an arm host.
+    platform: linux/amd64
+    build:
+      context: .
+      args:
+        BASE: ${BASE_IMAGE:-ghcr.io/davehornigan/webhook.site:latest}
+    ports:
+      - "${HTTP_PORT:-8099}:80"
+    environment: &app_env
+      APP_KEY: "${APP_KEY:?see README for how to generate one}"
+      APP_ENV: production
+      APP_DEBUG: "true"
+      APP_LOG: errorlog
+      APP_URL: http://localhost:${HTTP_PORT:-8099}
+      DB_CONNECTION: pgsql
+      DB_HOST: postgres
+      DB_PORT: "5432"
+      DB_DATABASE: webhook
+      DB_USERNAME: webhook
+      DB_PASSWORD: webhook
+      REDIS_HOST: valkey
+      CACHE_DRIVER: redis
+      QUEUE_DRIVER: redis
+      BROADCAST_DRIVER: redis
+      ECHO_HOST_MODE: path
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      valkey:
+        condition: service_started
+      # nginx resolves proxy_pass upstreams when it loads its config, so the
+      # echo server has to be resolvable or the whole web stack refuses to boot.
+      laravel-echo-server:
+        condition: service_started
+
+  # The image bakes a migrated sqlite file, which says nothing about Postgres,
+  # so the schema has to be created once before the app starts.
+  migrate:
+    # Upstream builds on node:11 and bkuhl/fpm-nginx:7.4, neither of which
+    # publishes arm64, so the platform has to be said out loud on an arm host.
+    platform: linux/amd64
+    build:
+      context: .
+      args:
+        BASE: ${BASE_IMAGE:-ghcr.io/davehornigan/webhook.site:latest}
+    command: ["php", "artisan", "migrate", "--force"]
+    environment: *app_env
+    restart: "no"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  worker:
+    # Upstream builds on node:11 and bkuhl/fpm-nginx:7.4, neither of which
+    # publishes arm64, so the platform has to be said out loud on an arm host.
+    platform: linux/amd64
+    build:
+      context: .
+      args:
+        BASE: ${BASE_IMAGE:-ghcr.io/davehornigan/webhook.site:latest}
+    # Replaces the s6 entrypoint, which would otherwise start nginx again.
+    command: ["php", "artisan", "queue:work", "--tries=3", "--timeout=10"]
+    environment: *app_env
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      valkey:
+        condition: service_started
+
+  # The name is load-bearing: the image's nginx.conf proxies /socket.io to
+  # http://laravel-echo-server:6001 and that hostname is baked in.
+  laravel-echo-server:
+    image: webhooksite/laravel-echo-server:1.0.0
+    environment:
+      LARAVEL_ECHO_SERVER_HOST: 0.0.0.0
+      LARAVEL_ECHO_SERVER_PORT: "6001"
+      # Not ECHO_REDIS_HOSTNAME, which is what upstream's compose passes and
+      # this image ignores, leaving it to die on "Redis could not subscribe".
+      LARAVEL_ECHO_SERVER_REDIS_HOST: valkey
+      LARAVEL_ECHO_SERVER_REDIS_PORT: "6379"
+      LARAVEL_ECHO_SERVER_AUTH_HOST: http://webhook
+      LARAVEL_ECHO_SERVER_CORS_ORIGIN: "*"
+    depends_on:
+      valkey:
+        condition: service_started
+
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: webhook
+      POSTGRES_USER: webhook
+      POSTGRES_PASSWORD: webhook
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U webhook -d webhook"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+  valkey:
+    image: valkey/valkey:8.1.3-alpine
+
+volumes:
+  pgdata:

@@ -153,6 +153,9 @@ jobs:
     needs: check
     if: needs.check.outputs.should_build == 'true'
     steps:
+      - name: Check out this repository
+        uses: actions/checkout@v5
+
       - name: Check out upstream sources
         uses: actions/checkout@v5
         with:
@@ -185,7 +188,11 @@ jobs:
             ${{ env.LABEL_COMMITTED }}=${{ needs.check.outputs.committed }}
             ${{ env.LABEL_RELEASE }}=${{ needs.check.outputs.release }}
 
-      - name: Build and push
+      # Two steps because the published image is upstream's build plus a thin
+      # overlay: upstream ships pdo_mysql and pdo_sqlite but no pdo_pgsql, and
+      # sqlite is not usable on NFS-backed storage. The first build stays in the
+      # local daemon and is never pushed.
+      - name: Build upstream
         uses: docker/build-push-action@v7
         with:
           context: ./upstream
@@ -193,11 +200,23 @@ jobs:
           # publishes arm64. Pinning amd64 makes that an explicit choice rather
           # than a confusing manifest error.
           platforms: linux/amd64
+          load: true
+          tags: upstream-build:${{ needs.check.outputs.tag }}
+          cache-from: type=gha,scope=upstream
+          cache-to: type=gha,scope=upstream,mode=max
+
+      - name: Build and push
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          build-args: |
+            BASE=upstream-build:${{ needs.check.outputs.tag }}
+          platforms: linux/amd64
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          cache-from: type=gha,scope=overlay
+          cache-to: type=gha,scope=overlay,mode=max
 
       - name: Create release
         uses: ncipollo/release-action@v1

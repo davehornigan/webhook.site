@@ -2,7 +2,12 @@
 
 Rebuilds the upstream [webhook.site](https://github.com/webhooksite/webhook.site)
 container. No application sources live here — the workflow checks out upstream
-at a commit and builds its `Dockerfile`.
+at a commit and builds its `Dockerfile`, then layers a four-line `Dockerfile` of
+its own on top.
+
+That overlay exists because upstream ships `pdo_mysql` and `pdo_sqlite` but no
+`pdo_pgsql`, and sqlite is not usable where this runs: it depends on fcntl
+locking, which is unreliable on NFS.
 
 ```
 ghcr.io/davehornigan/webhook.site:<YYYYMMDDHHMM>
@@ -78,3 +83,21 @@ expect that mail eventually and re-enable the schedule from the Actions tab.
   cloud-only. It receives, stores and displays requests.
 
 MIT, same as upstream.
+
+## Running it locally
+
+`compose.yaml` brings up the same shape the cluster runs: Postgres instead of
+the baked sqlite, a separate queue worker, a one-shot migration, and the echo
+server under the one hostname the image's nginx will accept.
+
+```
+export APP_KEY="base64:$(openssl rand -base64 32)"
+docker compose up -d --build
+curl -X POST localhost:8099/token -H 'Content-Type: application/json' -d '{}'
+```
+
+Upstream ships its own compose file; it does not work against the current
+images. It overrides the echo server's command with one its entrypoint no
+longer understands, passes Redis settings under names the echo server does not
+read, and puts the database in sqlite. Each of those took a failed container to
+find, so they are commented where they are fixed.
