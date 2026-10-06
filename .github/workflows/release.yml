@@ -234,6 +234,10 @@ jobs:
             ```
             ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ needs.check.outputs.tag }}
             ```
+          # A forced rebuild reuses the tag, so the release has to be updated
+          # rather than created; without this the run fails on "already_exists"
+          # after the image has already been pushed.
+          allowUpdates: true
           # PAT so releases are attributed to the account rather than
           # github-actions[bot], matching the other repositories.
           token: ${{ secrets.PAT }}
