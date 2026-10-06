@@ -14,10 +14,10 @@ ghcr.io/davehornigan/webhook.site:<YYYYMMDDHHMM>
 ghcr.io/davehornigan/webhook.site:latest
 ```
 
-The tag is the committer timestamp of the upstream commit, in UTC to the
-minute. It is purely numeric, so it sorts correctly for both humans and a Flux
-image policy without any tag filtering. The commit itself is not in the tag —
-it is on the image:
+The tag is when the image was built, in UTC to the minute: a release is named
+for when it was released. It is purely numeric, so it sorts correctly for both
+humans and a Flux image policy without any tag filtering. Which upstream commit
+it came from is on the image, not in the tag:
 
 | label | holds |
 |-------|-------|
@@ -49,20 +49,11 @@ To pin a release instead, set `UPSTREAM_REF` in the workflow to that tag.
 
 ## How it decides to build
 
-The daily run reads those same labels back off the published `:latest` and
-compares them with upstream:
-
-| published vs upstream | action |
-|-----------------------|--------|
-| same sha | nothing to do |
-| different sha, upstream newer | build |
-| different sha, upstream same age or older | refuse — upstream rewound |
-| tag already exists | skip unless forced |
-
-Comparing the sha rather than the tag means the check survives a change of tag
-scheme and catches an amended commit that kept its timestamp. The third row
-exists because a force-push on upstream `master` would otherwise be rebuilt as
-though it were new. If it does, the run ends. There is no state file
+The daily run reads `org.opencontainers.image.revision` back off the published
+`:latest` and compares it with upstream's current commit. Same sha, nothing to
+do; different sha, build. The tag cannot answer that question, since it names
+the build rather than the source — which is also why a forced rebuild is free
+of collisions: it simply gets a later timestamp. If it does, the run ends. There is no state file
 to drift: a failed or interrupted build simply leaves the tag absent, and the
 next run retries it.
 

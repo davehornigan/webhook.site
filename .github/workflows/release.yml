@@ -71,10 +71,11 @@ jobs:
           sha="$(jq -r '.sha' <<<"$commit")"
           committed="$(jq -r '.commit.committer.date' <<<"$commit")"
           release="$(gh api "repos/${UPSTREAM_REPO}/releases/latest" --jq '.tag_name' 2>/dev/null || echo 'none')"
-          # Tag is the commit timestamp in UTC, minute precision: numeric, so it
-          # sorts correctly for both humans and Flux image policies without any
-          # tag filtering. The sha lives in the labels instead.
-          tag="$(date -u -d "$committed" +%Y%m%d%H%M)"
+          # Tag is this build's own timestamp, UTC to the minute: a release is
+          # named for when it was released. Purely numeric, so it orders
+          # correctly for a Flux image policy with no tag filtering. Which
+          # upstream commit it came from is on the image, in the labels.
+          tag="$(date -u +%Y%m%d%H%M)"
           {
             echo "sha=${sha}"
             echo "short_sha=${sha:0:7}"
@@ -123,30 +124,18 @@ jobs:
           UP_SHA: ${{ steps.upstream.outputs.sha }}
           UP_COMMITTED: ${{ steps.upstream.outputs.committed }}
           PUB_SHA: ${{ steps.published.outputs.sha }}
-          PUB_COMMITTED: ${{ steps.published.outputs.committed }}
-          TAG: ${{ steps.upstream.outputs.tag }}
         run: |
           set -uo pipefail
           build() { echo "$1"; echo "should_build=true" >> "$GITHUB_OUTPUT"; exit 0; }
           skip()  { echo "$1"; echo "should_build=false" >> "$GITHUB_OUTPUT"; exit 0; }
 
+          # The whole question is whether upstream is at a commit we have not
+          # built. Comparing the sha answers it directly; the tag cannot, since
+          # it names the build rather than the source.
           [ "${{ inputs.force }}" = "true" ] && build "forced rebuild requested"
           [ -z "$PUB_SHA" ] && build "nothing published yet"
-          [ "$PUB_SHA" = "$UP_SHA" ] && skip "published image is already this commit"
-
-          # The sha differs, so something changed. Only move forward: an upstream
-          # force-push that rewinds master would otherwise be rebuilt as if new.
-          if [ -n "$PUB_COMMITTED" ]; then
-            up="$(date -u -d "$UP_COMMITTED" +%Y%m%d%H%M%S)"
-            pub="$(date -u -d "$PUB_COMMITTED" +%Y%m%d%H%M%S)"
-            [ "$up" -le "$pub" ] && skip "upstream ${UP_SHA:0:7} (${UP_COMMITTED}) is not newer than published ${PUB_SHA:0:7} (${PUB_COMMITTED}) -- refusing to build backwards"
-          fi
-
-          # Secondary guard: never silently overwrite an existing tag.
-          if docker manifest inspect "${REGISTRY}/${IMAGE_NAME}:${TAG}" >/dev/null 2>&1; then
-            skip "tag ${TAG} already exists; re-run with force to overwrite"
-          fi
-          build "upstream ${UP_SHA:0:7} (${UP_COMMITTED}) is newer than published ${PUB_SHA:0:7} (${PUB_COMMITTED})"
+          [ "$PUB_SHA" = "$UP_SHA" ] && skip "published image is already built from ${UP_SHA:0:7}"
+          build "upstream is at ${UP_SHA:0:7} (${UP_COMMITTED}), published is ${PUB_SHA:0:7}"
 
   build:
     runs-on: ubuntu-latest
@@ -234,10 +223,6 @@ jobs:
             ```
             ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ needs.check.outputs.tag }}
             ```
-          # A forced rebuild reuses the tag, so the release has to be updated
-          # rather than created; without this the run fails on "already_exists"
-          # after the image has already been pushed.
-          allowUpdates: true
           # PAT so releases are attributed to the account rather than
           # github-actions[bot], matching the other repositories.
           token: ${{ secrets.PAT }}
